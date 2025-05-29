@@ -3,8 +3,6 @@ import "imports"
 local pd <const> = playdate
 local gfx <const> = playdate.graphics
 
-
-
 -- Defining player variables
 local playerX, playerY = 0, PLAYER_SPAWN_Y
 local xVelocity, yVelocity = 0, 0
@@ -14,7 +12,6 @@ local grounded = false
 local spikeBlocks = {}
 local activeBlock
 local lastBlockSpawn = 0
-
 
 SpikeBlock =
 {
@@ -69,7 +66,6 @@ function checkGroundCollisions()
 end
 
 function checkCollisions()
-    
     for j, blockA in ipairs(spikeBlocks) do
         if blockA.falling == true then
             for i, blockB in ipairs(spikeBlocks) do
@@ -106,8 +102,6 @@ function SpikeBlock:setTransform()
     line = pd.geometry.lineSegment.new(p1x, p1y, p2x, p2y)
     transformedLine = self.transform:transformedLineSegment(line)
     self.line = transformedLine
-    
-    
 end
 
 function SpikeBlock:draw()
@@ -138,8 +132,6 @@ function SpikeBlock:draw()
     end
     --gfx.drawLine(self.line)
 end
-
-
 
 function generateBlock()
     newBlock = SpikeBlock:new()
@@ -248,7 +240,6 @@ function playdate.update()
                 --playdate.graphics.drawText("turning!", 0, 30)
             end
                 
-            
             yVelocity += inputY * PLAYER_ACCELERATION * deltaTime
             
             
@@ -358,13 +349,10 @@ function playdate.update()
         pupilOffsetY = math.floor(delta.y * EYE_LOOK_RADIUS)
     end
     
-    
-    
     --draw pupil
     --gfx.setColor(gfx.kColorBlack)
     --gfx.fillCircleAtPoint(playerX + 22.0, playerY, 2)
     playerPupil:drawAnchored(playerX + pupilOffsetX, playerY + pupilOffsetY, 0.0, 0.5)
-    
     
     if grounded then
         gfx.fillCircleAtPoint(380, 220, 5)
