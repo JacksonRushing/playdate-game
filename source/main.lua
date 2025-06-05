@@ -5,9 +5,15 @@ local gfx <const> = playdate.graphics
 
 -- Defining player variables
 local playerX, playerY = 0, PLAYER_SPAWN_Y
+
+local closestPoint
+
+local drawClone = false
+local loopPlayer = true
 local lastFramePlayerX = playerX
 local lastFramePlayerY = playerY
-local xVelocity, yVelocity = 0, 0
+local inputVelocity = pd.geometry.vector2D.new(0,0)
+local gravityVelocity = 0
 local xVelLastFrame, yVelLastFrame = 0, 0
 local grounded = false
 local onSlope = false
@@ -21,6 +27,11 @@ local rightButton = pd.kButtonDown
 local leftButton = pd.kButtonUp
 local jumpButton = pd.kButtonRight
 
+local menu = playdate.getSystemMenu()
+menu:addCheckmarkMenuItem("Loop Player", loopPlayer, function(value)
+    loopPlayer = value
+end)
+
 if pd.isSimulator then
     rightButton = pd.kButtonRight
     leftButton = pd.kButtonLeft
@@ -32,6 +43,12 @@ SpikeBlock =
 {
     
 } 
+
+function playdate.debugDraw()
+    if closestPoint ~= nil then
+    gfx.drawCircleAtPoint(closestPoint.x, closestPoint.y, 2)
+    end
+end
 function clamp(value, min, max)
     return math.max(math.min(value, max), min)
 end
@@ -65,6 +82,11 @@ function initPlatforms()
     b.rotation = 45
     b.posX = 30
     b.posY = 20
+    
+    b = nextBlock()
+    b.rotation = -120
+    b.posX = 30
+    b.posY = 40
     
     b = nextBlock()
     b.rotation = 120
@@ -138,6 +160,7 @@ function SpikeBlock:setTransform()
 end
 
 function SpikeBlock:draw()
+    
     if self.polygon == 0 then
         --print("tried to draw nil polygon, creating")
         newVertices = {}
@@ -158,12 +181,17 @@ function SpikeBlock:draw()
     end
     
     transformedPolygon = self.transform:transformedPolygon(self.polygon)
-    if self == activeBlock then
-        gfx.fillPolygon(transformedPolygon)
-    else
-        gfx.drawPolygon(transformedPolygon)
+    if DRAW_BOX then
+        if self == activeBlock then
+            gfx.fillPolygon(transformedPolygon)
+        else
+            gfx.drawPolygon(transformedPolygon)
+        end
     end
-    --gfx.drawLine(self.line)
+    if DRAW_LINE then
+        gfx.drawLine(self.line)
+    end
+    
 end
 
 function generateBlock()
@@ -186,6 +214,41 @@ function nextBlock()
     return newBlock
 end
 
+function drawPlayerSprite(posX, posY, running, focusX, focusY)
+    local flipArg = gfx.kImageUnflipped
+    local currentSprite = nil
+    
+    if running then
+        currentSprite = playerSpriteRunning
+        
+        local flip = (pd.getCurrentTimeMilliseconds() % 200) < 100
+        if flip then 
+            flipArg = gfx.kImageFlippedY
+        end
+    else
+        currentSprite = playerSprite
+    end
+    
+    currentSprite:drawAnchored(posX, posY, 0.0, 0.5, flipArg)
+    
+    local pupilOffsetX = 0
+    local pupilOffsetY = 0
+    
+    if focusX ~= -1 or focusY ~= -1  then
+        local deltaX = focusX - (posY)
+        local deltaY = focusY - posY
+        local delta = pd.geometry.vector2D.new(deltaX, deltaY)
+        delta:normalize()
+        --print(deltaX, deltaY, delta.x, delta.y)
+        pupilOffsetX = math.floor(delta.x * EYE_LOOK_RADIUS)
+        pupilOffsetY = math.floor(delta.y * EYE_LOOK_RADIUS)
+    end
+    
+    --draw pupil
+    --gfx.setColor(gfx.kColorBlack)
+    playerPupil:drawAnchored(posX + pupilOffsetX, posY + pupilOffsetY, 0.0, 0.5)
+end
+
 -- function grounded()
 --     --temporary, eventually will check collision
 --     if playerX == 0 then
@@ -197,7 +260,21 @@ end
 function jump()
     grounded = false
     onSlope = false
-    xVelocity = PLAYER_JUMP_VELOCITY
+    gravityVelocity = PLAYER_JUMP_VELOCITY
+end
+
+function drawGroundDebugHud(rightDirection, normal)
+    groundSlopePoint = pd.geometry.point.new(210, 170)
+    groundSlopeEnd = groundSlopePoint + (rightDirection * 30)
+    
+
+    local slopeLine = pd.geometry.lineSegment.new(groundSlopePoint.x, groundSlopePoint.y, groundSlopeEnd.x, groundSlopeEnd.y)
+    gfx.drawLine(slopeLine)
+    
+    local slopeMidpoint = slopeLine:midPoint()
+    
+    gfx.drawLine(slopeMidpoint.x, slopeMidpoint.y, slopeMidpoint.x + (normal.x * 10), slopeMidpoint.y + (normal.y * 10))
+  
 end
 
 -- playdate.update function is required in every project!
@@ -205,21 +282,17 @@ function playdate.update()
     -- Clear screen
     gfx.clear()
     
+    pd.drawFPS(380, 0)
+    
     --update delta time
     local deltaTime = playdate.getElapsedTime()
     playdate.resetElapsedTime()
     
-    -- local currentTime = pd.getCurrentTimeMilliseconds()
-    -- if  currentTime - lastBlockSpawn > TIME_BETWEEN_BLOCK_FALL then
-    --     lastBlockSpawn = currentTime
-    --     nextBlock()
-    -- end
-    
-    --playdate.graphics.drawText(deltaTime, 0, 0)
-    
     local inputX = 0
     local inputY = 0
     local rightDirection = pd.geometry.vector2D.new(0, -1)
+    local drawClone = false
+    
     -- Draw crank indicator if crank is docked
     if pd.isCrankDocked() then
         pd.ui.crankIndicator:draw()
@@ -237,6 +310,7 @@ function playdate.update()
             end
         end
         
+        --check collisions between blocks and between block and ground
         checkGroundCollisions()
         checkCollisions()
         
@@ -267,175 +341,226 @@ function playdate.update()
             if grounded then
                 jump()
             end
+            grounded = false
+            onSlope = false
         end
         
+        if (not pd.buttonIsPressed(jumpButton) and gravityVelocity > JUMP_CANCEL_THRESHOLD) then
+            gravityVelocity = PLAYER_MIN_JUMP_VELOCITY
+        end
         
+        if gravityVelocity > 0  and not grounded then
+            gravityVelocity -= PLAYER_GRAVITY * deltaTime
+        else
+            gravityVelocity -= FALLING_GRAVITY * deltaTime
+        end
         
-        rightDirection.y *= -1
-        onSlope = false
-        if grounded and groundBlock ~= nil then
-            onSlope = true
+        rightDirection.y *= -1 --why
+        if onSlope then
             rightDirection:projectAlong(groundBlock.line:segmentVector())
             rightDirection:normalize()
-            
         end
         
-        if (not pd.buttonIsPressed(jumpButton) and xVelocity > JUMP_CANCEL_THRESHOLD) then
-            xVelocity = PLAYER_MIN_JUMP_VELOCITY
-        end
-        
-        print(rightDirection)
+        gfx.drawLine(180, 180, 180 + (rightDirection.x * 10), 180 + (rightDirection.y * 10))
+        gfx.drawCircleAtPoint(180 + (rightDirection.x * 10), 180 + (rightDirection.y * 10), 2)
+        --print(rightDirection)
         --print(rightDirection:magnitude())
-        print(inputY)
+        --print(inputY)
+        
+        if not grounded and inputVelocity.x ~= 0 then 
+            --inputVelocity.x = 0
+            --drag input velocity x
+            local dragSign = 1
+            if inputVelocity.x >= 0 then
+               dragSign = -1
+            end
+            
+            inputVelocity.x += dragSign * DRAG_ACCELERATION * deltaTime
+            
+            -- if (dragSign == -1 and inputVelocity.x < 0) or (dragSign == 1 and inputVelocity.x > 0) then
+            --     inputVelocity.x = 0
+            --     print("overshot drag on input velocity x airborne")
+            -- end
+        end
         
         if inputY ~= 0 then
             --check if we're turning around
-            if (yVelocity > 0 and inputY < 0) or (yVelocity < 0 and inputY > 0) then
+            if (inputVelocity.y > 0 and inputY < 0) or (inputVelocity.y < 0 and inputY > 0) then
                 --yVelocity += inputY * DRAG_ACCELERATION * deltaTime
-                yVelocity += inputY * DRAG_ACCELERATION * rightDirection.y * deltaTime
-                xVelocity += DRAG_ACCELERATION * rightDirection.x * deltaTime
+                inputVelocity.y += inputY * DRAG_ACCELERATION * rightDirection.y * deltaTime
+                inputVelocity.x += inputY * DRAG_ACCELERATION * rightDirection.x * deltaTime
                 playdate.graphics.drawText("turning!", 0, 30)
             end
                 
             --yVelocity += inputY * PLAYER_ACCELERATION *  deltaTime
-            yVelocity += inputY * PLAYER_ACCELERATION * rightDirection.y * deltaTime
-            xVelocity += PLAYER_ACCELERATION * rightDirection.x * deltaTime
+            inputVelocity.y += inputY * PLAYER_ACCELERATION * rightDirection.y * deltaTime
+            inputVelocity.x += inputY * PLAYER_ACCELERATION * rightDirection.x * deltaTime
             
         else
             local dragSign = 1
-            if yVelocity >= 0 then
-                dragSign = -1
+            if inputVelocity.y >= 0 then
+               dragSign = -1
             end
             
-            yVelocity += dragSign * DRAG_ACCELERATION *  deltaTime
-            --yVelocity += dragSign * DRAG_ACCELERATION * rightDirection.y *  deltaTime
-            --xVelocity += dragSign * DRAG_ACCELERATION * rightDirection.x * deltaTime
+            --yVelocity += dragSign * DRAG_ACCELERATION *  deltaTime
+            inputVelocity.y += dragSign * DRAG_ACCELERATION * rightDirection.y *  deltaTime
+            -- inputVelocity.x += dragSign * DRAG_ACCELERATION * rightDirection.x * deltaTime * -1
             
             -- make sure we don't overshoot
-            if (dragSign == -1 and yVelocity < 0) or (dragSign == 1 and yVelocity > 0) then
-                yVelocity = 0
+            if (dragSign == -1 and inputVelocity.y < 0) or (dragSign == 1 and inputVelocity.y > 0) then
+               inputVelocity.y = 0
             end
+            
+            -- if (dragSign == -1 and inputVelocity.x < 0) or (dragSign == 1 and inputVelocity.x > 0) then
+            --     inputVelocity.x = 0
+            --     
+            -- end
         end
         
-        if xVelocity > 0 then
-            xVelocity -= PLAYER_GRAVITY * deltaTime
-        else
-            xVelocity -= FALLING_GRAVITY * deltaTime
-        end
-        
-        if grounded then
-            xVelocity = 0
-        end
-    
+        totalXVelocity = gravityVelocity + inputVelocity.x
         
         --clamp velocity
-        yVelocity = clamp(yVelocity, -PLAYER_MAX_VELOCITY, PLAYER_MAX_VELOCITY)
-        if xVelocity < -PLAYER_MAX_FALL_VELOCITY then 
-            xVelocity = -PLAYER_MAX_FALL_VELOCITY
+        inputVelocity.y = clamp(inputVelocity.y, -PLAYER_MAX_VELOCITY, PLAYER_MAX_VELOCITY)
+        
+        if totalXVelocity < -PLAYER_MAX_FALL_VELOCITY then 
+            totalXVelocity = -PLAYER_MAX_FALL_VELOCITY
         end
+        
+        
+        
+        
+        
+        
         
         -- Move player
         
-        local deltaPosX = xVelocity * deltaTime
-        local deltaPosY = yVelocity * deltaTime
+        local deltaPosX = totalXVelocity * deltaTime
+        local deltaPosY = (inputVelocity.y) * deltaTime
+        
+        local movedPosX = playerX + deltaPosX
+        local movedPosY = playerY + deltaPosY
+        
+        
+        local p2x = movedPosX - GROUND_RAYCAST_LENGTH
+        local p2y = movedPosY
+        
+        raycastLine = pd.geometry.lineSegment.new(movedPosX + GROUND_RAYCAST_OFFSET, movedPosY, p2x, p2y)
+        
+        gfx.drawLine(raycastLine)
         
         playerX += deltaPosX
         playerY += deltaPosY
         
-        local p2x = playerX - GROUND_RAYCAST_LENGTH
-        local p2y = playerY
         
-        raycastLine = pd.geometry.lineSegment.new(playerX + GROUND_RAYCAST_OFFSET, playerY, p2x, p2y)
         
-        --gfx.drawLine(raycastLine)
+        if grounded then
+            gravityVelocity = 0
+        end
         
-        --check collision with box lines
         grounded = false
-        
-        if xVelocity <= 0 then
-            local intersectingBlocks = {}
-            for i, block in ipairs(spikeBlocks) do
-                local intersects, intersection = raycastLine:intersectsLineSegment(block.line)
-                if intersects then
-                    table.insert(intersectingBlocks, {block, intersection})
-                end
-            end
-            local maxX = -1
-            local surface = nil
-            local collidingBlock
-            for i, intersection in ipairs(intersectingBlocks) do
-                if intersection[2].x > maxX then
-                    maxX = intersection[2].x
-                    collidingBlock = intersection[1]
-                end
-            end
-            if maxX ~= -1 then
-                
-                normal = collidingBlock.line:segmentVector():rightNormal()
-                
-                if normal:dotProduct(raycastLine:segmentVector()) > 0 then
-                    normal = collidingBlock.line:segmentVector():leftNormal()
-                end
-                
-                surface = collidingBlock.line:offsetBy(normal.x * BLOCK_HEIGHT * 0.5, normal.y * BLOCK_HEIGHT * 0.5)
-                playerPoint = pd.geometry.point.new(playerX, playerY)
-                closestPoint = surface:closestPointOnLineToPoint(playerPoint)
-                
-                --playerX  = maxX
-                grounded = true
-                onSlope = true
-                groundBlock = collidingBlock
-            end
+        --if gravityVelocity + inputVelocity.x <= 0 then
             
-            if maxX == -1 or grounded == false then
-                groundBlock = nil
+        local intersectingBlocks = {}
+        for i, block in ipairs(spikeBlocks) do
+            local intersects, intersection = raycastLine:intersectsLineSegment(block.line)
+            if intersects then
+                table.insert(intersectingBlocks, {block, intersection})
             end
         end
+        local maxX = -1
+        local surface = nil
+        local normal
+        
+        local collidingBlock
+        for i, intersection in ipairs(intersectingBlocks) do
+            if intersection[2].x > maxX then
+                maxX = intersection[2].x
+                collidingBlock = intersection[1]
+            end
+        end
+        onSlope = false
+        if maxX ~= -1 and gravityVelocity <= 0 then
+            normal = collidingBlock.line:segmentVector():rightNormal()
+            
+            if normal:dotProduct(raycastLine:segmentVector()) > 0 then
+                normal = collidingBlock.line:segmentVector():leftNormal()
+                print("left normal")
+            else 
+                print("right normal")
+            end
+            
+            surface = collidingBlock.line:offsetBy(normal.x * BLOCK_HEIGHT * 0.5, normal.y * BLOCK_HEIGHT * 0.5)
+            playerPoint = pd.geometry.point.new(playerX, playerY)
+            closestPoint = surface:closestPointOnLineToPoint(playerPoint)
+            
+            --playerX  = maxX
+            grounded = true
+            onSlope = true
+            groundBlock = collidingBlock
+            gravityVelocity = 0
+        end
+        
+        if maxX == -1 or grounded == false then
+            groundBlock = nil
+        end
+        if onSlope then
+            playerX = closestPoint.x
+            drawGroundDebugHud(rightDirection, normal)
+            --playerY = closestPoint.y
+        end
+        --end
         
         --clamp player position
         if playerX <= 0 then
             playerX = 0
         end
         
+        if loopPlayer then
+            drawClone = playerY < HALF_WIDTH or playerY > 240 - HALF_WIDTH
+            
+            if playerY < 0 then 
+                playerY = 240
+            elseif playerY > 240 then
+                playerY = 0
+            end
+        else
+            playerY = clamp(playerY, HALF_WIDTH, 240 - HALF_WIDTH)
+        end
+        
+        
         if playerX == 0 and not grounded then
             grounded = true
         end
         
-        
     end
+    
     -- Draw player
-    local flipArg = gfx.kImageUnflipped
-    if inputY ~= 0 then
-        local flip = (pd.getCurrentTimeMilliseconds() % 200) < 100
-        if flip then 
-            flipArg = gfx.kImageFlippedY
+    local cloneY = 0
+    
+    local running = inputY ~= 0
+    
+    local focusX = -1
+    local focusY = -1
+    
+    if activeBlock ~= nil then
+        focusX = activeBlock.posX
+        focusY = activeBlock.posY
+    end
+    drawPlayerSprite(playerX, playerY, running, focusX, focusY)
+    if drawClone then
+        if playerY < 120 then
+            cloneY = playerY + 240
+        else
+            cloneY = playerY - 240
         end
         
-        playerSpriteRunning:drawAnchored(playerX, playerY, 0.0, 0.5, flipArg)
-    else
-        playerSprite:drawAnchored(playerX, playerY, 0.0, 0.5)
+        drawPlayerSprite(playerX, cloneY, running, focusX, focusY)
     end
     
     --local angle = math.rad(playdate.getCrankPosition())
     
-    local pupilOffsetX = 0
-    local pupilOffsetY = 0
     
-    if activeBlock ~= nil then
-        
-        local deltaX = activeBlock.posX - (playerX)
-        local deltaY = activeBlock.posY - playerY
-        local delta = pd.geometry.vector2D.new(deltaX, deltaY)
-        delta:normalize()
-        --print(deltaX, deltaY, delta.x, delta.y)
-        pupilOffsetX = math.floor(delta.x * EYE_LOOK_RADIUS)
-        pupilOffsetY = math.floor(delta.y * EYE_LOOK_RADIUS)
-    end
     
-    --draw pupil
-    --gfx.setColor(gfx.kColorBlack)
-    --gfx.fillCircleAtPoint(playerX + 22.0, playerY, 2)
-    playerPupil:drawAnchored(playerX + pupilOffsetX, playerY + pupilOffsetY, 0.0, 0.5)
     
     if grounded then
         gfx.fillCircleAtPoint(380, 220, 5)
@@ -443,13 +568,11 @@ function playdate.update()
         gfx.drawCircleAtPoint(380, 220, 5)
     end
     
-    groundSlopePoint = pd.geometry.point.new(210, 170)
-    groundSlopeEnd = groundSlopePoint + (rightDirection * 30)
     
-    gfx.drawLine(groundSlopePoint.x, groundSlopePoint.y, groundSlopeEnd.x, groundSlopeEnd.y)
     
-    gfx.drawText(xVelocity, 0, 0)
-    gfx.drawText(yVelocity, 0, 20)
+    gfx.drawText(inputVelocity.x, 0, 0)
+    gfx.drawText(inputVelocity.y, 0, 25)
+    gfx.drawText(gravityVelocity, 0, 50)
     
     xVelLastFrame = xVelocity
     yVelLastFrame = yVelocity
@@ -457,4 +580,4 @@ function playdate.update()
     lastFramePlayerX = playerX
     lastFramePlayerY = playerY
     
-end
+    end
