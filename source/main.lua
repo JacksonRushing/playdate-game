@@ -3,10 +3,17 @@ import "imports"
 local pd <const> = playdate
 local gfx <const> = playdate.graphics
 
+local initializedGame = false
+
 -- Defining player variables
 local playerX, playerY = 0, PLAYER_SPAWN_Y
 
+local raycastLine
+local velocityLine
+
 local closestPoint
+
+local upVector = pd.geometry.vector2D.new(1,0)
 
 local drawClone = false
 local loopPlayer = true
@@ -63,6 +70,8 @@ function SpikeBlock:new(o)
     self.polygon = 0
     self.draw = SpikeBlock.draw
     self.fall = SpikeBlock.fall
+    self.getNormal = SpikeBlock.getNormal
+    
     self.setTransform = SpikeBlock.setTransform
     self.posX = 0
     self.posY = 0
@@ -70,55 +79,58 @@ function SpikeBlock:new(o)
     self.width = 0
     self.rotation = 0
     self.falling = true
+    self.normal = nil
     return self
 end
 
 function initPlatforms()
-    for k in pairs(spikeBlocks) do
-        spikeBlocks[k] = nil
-    end
+    clearPlatforms()
     
-    local b = nextBlock()
+    local b = nextBlock(false)
     b.rotation = 45
     b.posX = 30
     b.posY = 20
+    b:setTransform()
     
-    b = nextBlock()
+    
+    b = nextBlock(false)
     b.rotation = -120
     b.posX = 30
     b.posY = 40
+    b:setTransform()
     
-    b = nextBlock()
+    b = nextBlock(false)
     b.rotation = 120
     b.posY = 150
     b.posX = 30
+    b:setTransform()
     
-    activeBlock = nil
+  
 end
-
-function checkGroundCollisions()
-    for i,v in ipairs(spikeBlocks) do
-        if v ~= nil then
-            x1, y1, x2, y2 = v.line:unpack()
-            min = math.min(x1, x2)
-            if min <= 0 then
-                xDelta = -min
-                x1 += xDelta
-                x2 += xDelta
-                
-                v.posX += xDelta
-                v.line = playdate.geometry.lineSegment.new(x1, y1, x2, y2)
-                
-                
-                v.falling = false
-                if v == activeBlock then
-                    activeBlock = nil
-                end
-            end
-        end
-    end
-    
-end
+-- 
+-- function checkGroundCollisions()
+--     for i,v in ipairs(spikeBlocks) do
+--         if v ~= nil then
+--             x1, y1, x2, y2 = v.line:unpack()
+--             min = math.min(x1, x2)
+--             if min <= 0 then
+--                 xDelta = -min
+--                 x1 += xDelta
+--                 x2 += xDelta
+--                 
+--                 v.posX += xDelta
+--                 v.line = playdate.geometry.lineSegment.new(x1, y1, x2, y2)
+--                 
+--                 
+--                 v.falling = false
+--                 if v == activeBlock then
+--                     activeBlock = nil
+--                 end
+--             end
+--         end
+--     end
+--     
+-- end
 
 function checkCollisions()
     for j, blockA in ipairs(spikeBlocks) do
@@ -141,10 +153,35 @@ end
 function SpikeBlock:fall(deltaTime)
     if self.falling then
         self.posX -= BLOCK_FALL_VELOCITY * deltaTime
+        print(self.rotation)
     end
 end
 
+function SpikeBlock:getNormal()
+    local normal = pd.geometry.vector2D.new(0,0)
+    local lineVector = pd.geometry.vector2D.new(self.line.x2 - self.line.x1,  self.line.y2 - self.line.y1)
+    if self.rotation > 180 then
+        normal.x = -lineVector.y
+        normal.y = lineVector.x
+    else
+        normal.x = lineVector.y
+        normal.y = -lineVector.x
+    end
+    
+    normal:normalize()
+    return normal
+end
+
 function SpikeBlock:setTransform()
+    
+    if self.rotation > 360 or self.rotation < -360 then
+        self.rotation = self.rotation % 360
+    end
+    
+    if self.rotation < 0 then
+        self.rotation = 360 + self.rotation
+    end
+    
     self.transform = pd.geometry.affineTransform.new()
     self.transform:rotate(self.rotation)
     self.transform:translate(self.posX, self.posY)
@@ -157,6 +194,11 @@ function SpikeBlock:setTransform()
     line = pd.geometry.lineSegment.new(p1x, p1y, p2x, p2y)
     transformedLine = self.transform:transformedLineSegment(line)
     self.line = transformedLine
+    
+    --calculate normal
+    local lineVector = self.line:segmentVector()
+    local perpVector = pd.geometry.vector2D.new(lineVector.y, lineVector.x)
+    
 end
 
 function SpikeBlock:draw()
@@ -206,9 +248,11 @@ function generateBlock()
     return newBlock
 end
 
-function nextBlock()
+function nextBlock(setActive)
     newBlock = generateBlock()
-    activeBlock = newBlock
+    if setActive then
+        activeBlock = newBlock
+    end
     newBlock:setTransform()
     table.insert(spikeBlocks, newBlock)
     return newBlock
@@ -258,9 +302,40 @@ end
 -- end
 
 function jump()
+    
+    gravityVelocity = PLAYER_JUMP_VELOCITY
+    
+    if grounded and inputVelocity.x ~= 0 then
+        gravityVelocity += inputVelocity.x * PLAYER_JUMP_SLOPE_RATIO
+        inputVelocity.x = 0
+    end
+    
     grounded = false
     onSlope = false
-    gravityVelocity = PLAYER_JUMP_VELOCITY
+end
+
+
+
+function init()
+    -- remove all platforms
+    clearPlatforms()
+    
+    -- add ground platform
+
+end
+
+function clearPlatforms()
+    for k in pairs(spikeBlocks) do
+        spikeBlocks[k] = nil
+    end
+    
+    local groundBlock = nextBlock(false)
+    groundBlock.falling = false
+    groundBlock.posX = -0.5
+    groundBlock.posY = 120
+    groundBlock.rotation = 90.0
+    groundBlock.width = 240
+    groundBlock:setTransform()
 end
 
 function drawGroundDebugHud(rightDirection, normal)
@@ -277,8 +352,76 @@ function drawGroundDebugHud(rightDirection, normal)
   
 end
 
+function getOverlappingBlock(lineSegment, blocks)
+    local intersectingBlocks = {}
+    local intersectingPoint = pd.geometry.point.new(0,0)
+    local maxX = -1
+    for i, block in ipairs(blocks) do
+        local intersects, intersection = lineSegment:intersectsLineSegment(block.line)
+        if intersects then
+            table.insert(intersectingBlocks, {block, intersection})
+        end
+    end
+    
+    local collidingBlock = nil
+    for i, intersection in ipairs(intersectingBlocks) do
+        if intersection[2].x > maxX then
+            maxX = intersection[2].x
+            collidingBlock = intersection[1]
+            intersectingPoint = intersection[2]
+        end
+    end
+    
+    
+    
+    return collidingBlock, intersectingPoint
+end
+
+function getNearestPointOnGround(playerPos, block)
+    local normal = block:getNormal()
+    local offsetX = normal.x * block.height * 0.5
+    local offsetY = normal.y * block.height * 0.5
+    
+    --offsetX += block.posX
+    --offsetY += block.posY
+    local groundLine = block.line:offsetBy(offsetX, offsetY)
+    
+    return groundLine:closestPointOnLineToPoint(playerPos)
+end
+
+function playdate.debugDraw()
+    -- for i,v in ipairs(spikeBlocks) do
+    --     if v ~= nil then
+    --         local midpoint = v.line:midPoint()
+    --         local normal = v:getNormal()
+    --         
+    --         local endPoint = pd.geometry.point.new(midpoint.x + (normal.x * 20), midpoint.y + (normal.y * 20))
+    --         
+    --         gfx.drawLine(midpoint.x, midpoint.y, endPoint.x, endPoint.y)
+    --         gfx.drawCircleAtPoint(endPoint.x, endPoint.y, 2)
+    --     end
+    -- end
+    
+    gfx.drawLine(raycastLine)
+    gfx.drawLine(velocityLine)
+end
+
+function isPlatform(block)
+    local trimmedRotation = block.rotation % 180
+    if trimmedRotation < 30 or trimmedRotation > 150 then
+        return false
+    else
+        return true
+    end
+end
+
 -- playdate.update function is required in every project!
 function playdate.update()
+    if not initializedGame then
+        init()
+        initializedGame = true
+    end
+    
     -- Clear screen
     gfx.clear()
     
@@ -290,254 +433,212 @@ function playdate.update()
     
     local inputX = 0
     local inputY = 0
-    local rightDirection = pd.geometry.vector2D.new(0, -1)
+    local rightDirection = pd.geometry.vector2D.new(0, 1)
     local drawClone = false
     
-    -- Draw crank indicator if crank is docked
-    if pd.isCrankDocked() then
-        pd.ui.crankIndicator:draw()
-    else
-        --Gameplay Loop
-        if activeBlock ~= nil then
-            activeBlock.rotation = playdate.getCrankPosition()
+    
+    
+    --update blocks
+    
+    if activeBlock ~= nil then
+        activeBlock.rotation = playdate.getCrankPosition()
+    end
+    
+    for i,v in ipairs(spikeBlocks) do
+        if v ~= nil then
+            v:fall(deltaTime)
+            v:setTransform()
         end
-        
-        --draw blocks
-        for i,v in ipairs(spikeBlocks) do
-            if v ~= nil then
-                v:fall(deltaTime)
-                v:setTransform()
-            end
-        end
-        
-        --check collisions between blocks and between block and ground
-        checkGroundCollisions()
-        checkCollisions()
-        
-        for i,v in ipairs(spikeBlocks) do
-            if v ~= nil then
-                v:draw()
-            end
-        end
-        
-        if (pd.buttonJustPressed(pd.kButtonB)) then
-            nextBlock()
-        end
-        
-        if (pd.buttonJustPressed(pd.kButtonA)) then
-            initPlatforms()
-        end
-        
-        if (pd.buttonIsPressed(leftButton)) then
-            inputY -= 1
-        end
-        
-        if (pd.buttonIsPressed(rightButton)) then
-            inputY += 1
-        end
-        
-        if (pd.buttonJustPressed(jumpButton)) then
-            --jump
-            if grounded then
-                jump()
-            end
-            grounded = false
-            onSlope = false
-        end
-        
-        if (not pd.buttonIsPressed(jumpButton) and gravityVelocity > JUMP_CANCEL_THRESHOLD) then
-            gravityVelocity = PLAYER_MIN_JUMP_VELOCITY
-        end
-        
-        if gravityVelocity > 0  and not grounded then
-            gravityVelocity -= PLAYER_GRAVITY * deltaTime
-        else
-            gravityVelocity -= FALLING_GRAVITY * deltaTime
-        end
-        
-        rightDirection.y *= -1 --why
-        if onSlope then
-            rightDirection:projectAlong(groundBlock.line:segmentVector())
-            rightDirection:normalize()
-        end
-        
-        gfx.drawLine(180, 180, 180 + (rightDirection.x * 10), 180 + (rightDirection.y * 10))
-        gfx.drawCircleAtPoint(180 + (rightDirection.x * 10), 180 + (rightDirection.y * 10), 2)
-        --print(rightDirection)
-        --print(rightDirection:magnitude())
-        --print(inputY)
-        
-        if not grounded and inputVelocity.x ~= 0 then 
-            --inputVelocity.x = 0
-            --drag input velocity x
-            local dragSign = 1
-            if inputVelocity.x >= 0 then
-               dragSign = -1
-            end
-            
-            inputVelocity.x += dragSign * DRAG_ACCELERATION * deltaTime
-            
-            -- if (dragSign == -1 and inputVelocity.x < 0) or (dragSign == 1 and inputVelocity.x > 0) then
-            --     inputVelocity.x = 0
-            --     print("overshot drag on input velocity x airborne")
-            -- end
-        end
-        
-        if inputY ~= 0 then
-            --check if we're turning around
-            if (inputVelocity.y > 0 and inputY < 0) or (inputVelocity.y < 0 and inputY > 0) then
-                --yVelocity += inputY * DRAG_ACCELERATION * deltaTime
-                inputVelocity.y += inputY * DRAG_ACCELERATION * rightDirection.y * deltaTime
-                inputVelocity.x += inputY * DRAG_ACCELERATION * rightDirection.x * deltaTime
-                playdate.graphics.drawText("turning!", 0, 30)
-            end
-                
-            --yVelocity += inputY * PLAYER_ACCELERATION *  deltaTime
-            inputVelocity.y += inputY * PLAYER_ACCELERATION * rightDirection.y * deltaTime
-            inputVelocity.x += inputY * PLAYER_ACCELERATION * rightDirection.x * deltaTime
-            
-        else
-            local dragSign = 1
-            if inputVelocity.y >= 0 then
-               dragSign = -1
-            end
-            
-            --yVelocity += dragSign * DRAG_ACCELERATION *  deltaTime
-            inputVelocity.y += dragSign * DRAG_ACCELERATION * rightDirection.y *  deltaTime
-            -- inputVelocity.x += dragSign * DRAG_ACCELERATION * rightDirection.x * deltaTime * -1
-            
-            -- make sure we don't overshoot
-            if (dragSign == -1 and inputVelocity.y < 0) or (dragSign == 1 and inputVelocity.y > 0) then
-               inputVelocity.y = 0
-            end
-            
-            -- if (dragSign == -1 and inputVelocity.x < 0) or (dragSign == 1 and inputVelocity.x > 0) then
-            --     inputVelocity.x = 0
-            --     
-            -- end
-        end
-        
-        totalXVelocity = gravityVelocity + inputVelocity.x
-        
-        --clamp velocity
-        inputVelocity.y = clamp(inputVelocity.y, -PLAYER_MAX_VELOCITY, PLAYER_MAX_VELOCITY)
-        
-        if totalXVelocity < -PLAYER_MAX_FALL_VELOCITY then 
-            totalXVelocity = -PLAYER_MAX_FALL_VELOCITY
-        end
-        
-        
-        
-        
-        
-        
-        
-        -- Move player
-        
-        local deltaPosX = totalXVelocity * deltaTime
-        local deltaPosY = (inputVelocity.y) * deltaTime
-        
-        local movedPosX = playerX + deltaPosX
-        local movedPosY = playerY + deltaPosY
-        
-        
-        local p2x = movedPosX - GROUND_RAYCAST_LENGTH
-        local p2y = movedPosY
-        
-        raycastLine = pd.geometry.lineSegment.new(movedPosX + GROUND_RAYCAST_OFFSET, movedPosY, p2x, p2y)
-        
-        gfx.drawLine(raycastLine)
-        
-        playerX += deltaPosX
-        playerY += deltaPosY
-        
-        
-        
+    end
+    
+    --check collisions between blocks
+    checkCollisions()
+    
+    
+    
+    if (pd.buttonJustPressed(pd.kButtonB)) then
+        nextBlock(true)
+    end
+    
+    if (pd.buttonJustPressed(pd.kButtonA)) then
+        initPlatforms()
+    end
+    
+    if (pd.buttonIsPressed(leftButton)) then
+        inputY -= 1
+    end
+    
+    if (pd.buttonIsPressed(rightButton)) then
+        inputY += 1
+    end
+    
+    if (pd.buttonJustPressed(jumpButton)) then
+        --jump
         if grounded then
-            gravityVelocity = 0
+            jump()
         end
-        
         grounded = false
-        --if gravityVelocity + inputVelocity.x <= 0 then
-            
-        local intersectingBlocks = {}
-        for i, block in ipairs(spikeBlocks) do
-            local intersects, intersection = raycastLine:intersectsLineSegment(block.line)
-            if intersects then
-                table.insert(intersectingBlocks, {block, intersection})
-            end
-        end
-        local maxX = -1
-        local surface = nil
-        local normal
-        
-        local collidingBlock
-        for i, intersection in ipairs(intersectingBlocks) do
-            if intersection[2].x > maxX then
-                maxX = intersection[2].x
-                collidingBlock = intersection[1]
-            end
-        end
         onSlope = false
-        if maxX ~= -1 and gravityVelocity <= 0 then
-            normal = collidingBlock.line:segmentVector():rightNormal()
-            
-            if normal:dotProduct(raycastLine:segmentVector()) > 0 then
-                normal = collidingBlock.line:segmentVector():leftNormal()
-                print("left normal")
-            else 
-                print("right normal")
-            end
-            
-            surface = collidingBlock.line:offsetBy(normal.x * BLOCK_HEIGHT * 0.5, normal.y * BLOCK_HEIGHT * 0.5)
-            playerPoint = pd.geometry.point.new(playerX, playerY)
-            closestPoint = surface:closestPointOnLineToPoint(playerPoint)
-            
-            --playerX  = maxX
+    end
+    
+    --Calculate velocity
+    --p1 is player position offset upwards
+    --p2 is player position offset downwards
+    
+    local playerPoint = pd.geometry.point.new(playerX, playerY)
+    local p1 = pd.geometry.point.new(playerX + GROUND_RAYCAST_OFFSET, playerY)
+    local p2 = pd.geometry.point.new(p1.x - GROUND_RAYCAST_LENGTH, playerY)
+    raycastLine = pd.geometry.lineSegment.new(p1.x, p1.y, p2.x, p2.y)
+    
+    local overlappingBlock, overlappingPoint = getOverlappingBlock(raycastLine, spikeBlocks)
+    grounded = false
+    if overlappingBlock ~= nil then
+        if isPlatform(overlappingBlock) then
             grounded = true
-            onSlope = true
-            groundBlock = collidingBlock
-            gravityVelocity = 0
-        end
-        
-        if maxX == -1 or grounded == false then
-            groundBlock = nil
-        end
-        if onSlope then
-            playerX = closestPoint.x
-            drawGroundDebugHud(rightDirection, normal)
-            --playerY = closestPoint.y
-        end
-        --end
-        
-        --clamp player position
-        if playerX <= 0 then
-            playerX = 0
-        end
-        
-        if loopPlayer then
-            drawClone = playerY < HALF_WIDTH or playerY > 240 - HALF_WIDTH
-            
-            if playerY < 0 then 
-                playerY = 240
-            elseif playerY > 240 then
-                playerY = 0
-            end
         else
-            playerY = clamp(playerY, HALF_WIDTH, 240 - HALF_WIDTH)
+            grounded = false
+            inputVelocity:projectAlong(overlappingBlock.line:segmentVector())
+        end
+    end
+    
+    
+    if grounded then
+        rightDirection:projectAlong(overlappingBlock.line:segmentVector())
+        local nearestPoint = getNearestPointOnGround(playerPoint, overlappingBlock)
+        
+        playerX = nearestPoint.x
+        --playerY = nearestPoint.y
+        
+    end    
+    
+    
+    if (not pd.buttonIsPressed(jumpButton) and gravityVelocity > JUMP_CANCEL_THRESHOLD) then
+        gravityVelocity = PLAYER_MIN_JUMP_VELOCITY
+    end
+    
+    
+    if gravityVelocity > 0  and not grounded then
+        gravityVelocity -= PLAYER_GRAVITY * deltaTime
+    else
+        gravityVelocity -= FALLING_GRAVITY * deltaTime
+    end
+    
+    if grounded and gravityVelocity < 0  then
+        gravityVelocity = 0
+    end
+    
+    totalXVelocity = gravityVelocity + inputVelocity.x
+    
+    local playerInputAccelerationAmount = deltaTime * PLAYER_ACCELERATION
+    
+    inputVelocity.x += rightDirection.x * playerInputAccelerationAmount * inputY
+    inputVelocity.y += rightDirection.y * playerInputAccelerationAmount * inputY    
+    
+    
+    --calculate drag
+    
+    local turning = inputVelocity.y > 0 and inputY < 0 or inputVelocity.y < 0 and inputY > 0
+    
+    
+    
+    if grounded and (inputVelocity.x ~= 0 or inputVelocity.y ~= 0) and (turning or inputY == 0) then
+        local dragDirection = -inputVelocity:normalized()
+        inputVelocity.x += deltaTime * dragDirection.x * DRAG_ACCELERATION 
+        inputVelocity.y += deltaTime * dragDirection.y * DRAG_ACCELERATION 
+        
+        if (dragDirection.x > 0 and inputVelocity.x > 0) or (dragDirection.x < 0 and inputVelocity.x < 0) then
+            inputVelocity.x = 0
         end
         
-        
-        if playerX == 0 and not grounded then
-            grounded = true
+        if (dragDirection.y > 0 and inputVelocity.y > 0) or (dragDirection.y < 0 and inputVelocity.y < 0) then
+            inputVelocity.y = 0
         end
         
     end
     
-    -- Draw player
-    local cloneY = 0
+    gfx.drawLine(180, 180, 180 + (rightDirection.x * 10), 180 + (rightDirection.y * 10))
+    gfx.drawCircleAtPoint(180 + (rightDirection.x * 10), 180 + (rightDirection.y * 10), 2)
     
-    local running = inputY ~= 0
+    --clamp velocity
+    inputVelocity.y = clamp(inputVelocity.y, -PLAYER_MAX_VELOCITY, PLAYER_MAX_VELOCITY)
+    
+    if totalXVelocity < -PLAYER_MAX_FALL_VELOCITY then 
+        totalXVelocity = -PLAYER_MAX_FALL_VELOCITY
+    end
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    --Move player based on velocity
+    local deltaX = deltaTime * (inputVelocity.x + gravityVelocity)
+    local deltaY = deltaTime * (inputVelocity.y)
+    
+    local movedPlayerX = playerX + deltaX
+    local movedPlayerY = playerY + deltaY
+    
+    --check for tunneling
+    
+    velocityLine = pd.geometry.lineSegment.new(playerX, playerY, movedPlayerX, movedPlayerY)
+    
+    local overlappingBlock, overlappingPoint = getOverlappingBlock(velocityLine, spikeBlocks)
+    
+    
+    
+    if overlappingBlock  ~= nil then
+        local normal = overlappingBlock:getNormal()
+        local velocityVector = velocityLine:segmentVector()
+        local correctDirection = normal:dotProduct(velocityVector) < 0 
+        local isntPlatform = not isPlatform(overlappingBlock)
+        if correctDirection or isntPlatform then
+            
+            local formatted = string.format("prevented tunneling %i wall: %s direction: %s ", pd.getCurrentTimeMilliseconds(), tostring(isntPlatform), tostring(correctDirection))
+            print(formatted)
+            
+            
+            
+            -- get vector from nearest point on line to current player pos
+            local playerPoint = pd.geometry.point.new(playerX, playerY)
+            local nearestPoint = overlappingBlock.line:closestPointOnLineToPoint(playerPoint)
+            -- local correctionVector = pd.geometry.vector2D.new(playerPoint.x - nearestPoint.x, playerPoint.y - nearestPoint.y).normalized()
+            
+            
+            if normal:dotProduct(velocityVector) > 0 then
+                normal = -normal
+            end
+            
+            movedPlayerX = nearestPoint.x + (normal.x * BLOCK_HEIGHT * 0.5)
+            movedPlayerY = nearestPoint.y + (normal.y * BLOCK_HEIGHT * 0.5)
+            
+            
+            inputVelocity:projectAlong(overlappingBlock.line:segmentVector()) 
+            inputVelocity *= PLAYER_REDIRECT_VELOCITY_RATIO 
+            
+            if not isntPlatform then
+                grounded = true
+            end
+        end   
+    end
+    
+    
+    playerX = movedPlayerX
+    playerY = movedPlayerY
+    
+    
+    
+    
+    --clamp player position
+    if playerX <= 0 then
+        playerX = 0
+    end
+    
+    if not loopPlayer then
+        playerY = clamp(playerY, HALF_WIDTH, 240 - HALF_WIDTH)
+    end
     
     local focusX = -1
     local focusY = -1
@@ -546,6 +647,19 @@ function playdate.update()
         focusX = activeBlock.posX
         focusY = activeBlock.posY
     end
+    
+    local cloneY = 0
+    
+    local drawClone = playerY < HALF_WIDTH or playerY > 240 - HALF_WIDTH
+    
+    if playerY < 0 then 
+        playerY = 240
+    elseif playerY > 240 then
+        playerY = 0
+    end
+    
+    local running = inputY ~= 0
+    
     drawPlayerSprite(playerX, playerY, running, focusX, focusY)
     if drawClone then
         if playerY < 120 then
@@ -559,6 +673,13 @@ function playdate.update()
     
     --local angle = math.rad(playdate.getCrankPosition())
     
+    --draw blocks
+    for i,v in ipairs(spikeBlocks) do
+        if v ~= nil then
+            v:draw()
+        end
+    end
+    
     
     
     
@@ -568,11 +689,9 @@ function playdate.update()
         gfx.drawCircleAtPoint(380, 220, 5)
     end
     
-    
-    
-    gfx.drawText(inputVelocity.x, 0, 0)
-    gfx.drawText(inputVelocity.y, 0, 25)
-    gfx.drawText(gravityVelocity, 0, 50)
+    gfx.drawText(inputVelocity.x, 50, 0)
+    gfx.drawText(inputVelocity.y, 50, 25)
+    gfx.drawText(gravityVelocity, 50, 50)
     
     xVelLastFrame = xVelocity
     yVelLastFrame = yVelocity
