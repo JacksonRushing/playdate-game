@@ -5,6 +5,8 @@ local gfx <const> = playdate.graphics
 
 local initializedGame = false
 
+local cameraScroll = 0
+
 -- Defining player variables
 local playerX, playerY = 0, PLAYER_SPAWN_Y
 
@@ -352,6 +354,32 @@ function drawGroundDebugHud(rightDirection, normal)
   
 end
 
+function getOverlappingWall(lineSegment, blocks)
+    local intersectingBlocks = {}
+    local intersectingPoint = pd.geometry.point.new(0,0)
+    local maxX = -1
+    for i, block in ipairs(blocks) do
+        if not isPlatform(block) then
+            local intersects, intersection = lineSegment:intersectsLineSegment(block.line)
+            if intersects then
+                table.insert(intersectingBlocks, {block, intersection})
+            end
+        end
+    end
+    
+    local collidingBlock = nil
+    for i, intersection in ipairs(intersectingBlocks) do
+        if intersection[2].x > maxX then
+            maxX = intersection[2].x
+            collidingBlock = intersection[1]
+            intersectingPoint = intersection[2]
+        end
+    end
+    
+    return collidingBlock, intersectingPoint
+    
+end
+
 function getOverlappingBlock(lineSegment, blocks)
     local intersectingBlocks = {}
     local intersectingPoint = pd.geometry.point.new(0,0)
@@ -404,6 +432,18 @@ function playdate.debugDraw()
     
     gfx.drawLine(raycastLine)
     gfx.drawLine(velocityLine)
+    local normalizedVelocity = inputVelocity:normalized()
+    gfx.drawLine(25,25, 25 + (normalizedVelocity.x * 15), 25 + (normalizedVelocity.y * 15))
+    local playerRect = getPlayerRect()
+    gfx.drawRect(playerRect:unpack())
+end
+
+function getPlayerRect()
+    
+    -- playerX + legs, playerY, 
+    local playerRect = pd.geometry.rect.new(playerX + PLAYER_LEG_LENGTH, playerY - HALF_WIDTH, PLAYER_HEIGHT, PLAYER_WIDTH)
+    
+    return playerRect
 end
 
 function isPlatform(block)
@@ -493,11 +533,12 @@ function playdate.update()
     local overlappingBlock, overlappingPoint = getOverlappingBlock(raycastLine, spikeBlocks)
     grounded = false
     if overlappingBlock ~= nil then
+        inputVelocity:projectAlong(overlappingBlock.line:segmentVector())
         if isPlatform(overlappingBlock) then
             grounded = true
         else
             grounded = false
-            inputVelocity:projectAlong(overlappingBlock.line:segmentVector())
+            
         end
     end
     
@@ -581,9 +622,34 @@ function playdate.update()
     local movedPlayerX = playerX + deltaX
     local movedPlayerY = playerY + deltaY
     
+    
+    
     --check for tunneling
     
     velocityLine = pd.geometry.lineSegment.new(playerX, playerY, movedPlayerX, movedPlayerY)
+    local velocityDirection = velocityLine:segmentVector():normalized()
+    local velocityMagnitude = velocityLine:length() + (BLOCK_HEIGHT * 0.5)
+    
+    -- add half block height , offset start by character width in y direction
+    
+    local yDirection = 0
+    if deltaY > 0 then 
+        yDirection = 1
+    elseif deltaY < 0 then 
+        yDirection = -1
+    end
+    
+    local velocityOffset = pd.geometry.vector2D.new(velocityDirection.x * velocityMagnitude, (velocityDirection.y * velocityMagnitude) )--+ yDirection * PLAYER_WIDTH * 0.5)
+    
+    local velocityStartPoint = pd.geometry.point.new(playerX + PLAYER_LEG_LENGTH, playerY + (-yDirection * HALF_WIDTH))
+    
+    --velocityStartPoint.y += yDirection * PLAYER_WIDTH * 0.5
+    
+    local velocityEndPoint = velocityStartPoint:offsetBy(velocityOffset.x, velocityOffset.y + (yDirection * PLAYER_WIDTH))
+    
+    velocityLine = pd.geometry.lineSegment.new(velocityStartPoint.x, velocityStartPoint.y, velocityEndPoint.x, velocityEndPoint.y)
+    
+    
     
     local overlappingBlock, overlappingPoint = getOverlappingBlock(velocityLine, spikeBlocks)
     
@@ -594,7 +660,7 @@ function playdate.update()
         local velocityVector = velocityLine:segmentVector()
         local correctDirection = normal:dotProduct(velocityVector) < 0 
         local isntPlatform = not isPlatform(overlappingBlock)
-        if correctDirection or isntPlatform then
+        if (isntPlatform) or (not isntPlatform and correctDirection) then
             
             local formatted = string.format("prevented tunneling %i wall: %s direction: %s ", pd.getCurrentTimeMilliseconds(), tostring(isntPlatform), tostring(correctDirection))
             print(formatted)
@@ -604,7 +670,17 @@ function playdate.update()
             -- get vector from nearest point on line to current player pos
             local playerPoint = pd.geometry.point.new(playerX, playerY)
             local nearestPoint = overlappingBlock.line:closestPointOnLineToPoint(playerPoint)
-            -- local correctionVector = pd.geometry.vector2D.new(playerPoint.x - nearestPoint.x, playerPoint.y - nearestPoint.y).normalized()
+            --local correctionVector = pd.geometry.vector2D.new(playerPoint.x - nearestPoint.x, playerPoint.y - nearestPoint.y).normalized()
+            
+            local correctionYDirection = 0
+            
+            local correctionY = playerPoint.y - nearestPoint.y
+            
+            if correctionY > 0 then 
+                correctionYDirection = 1
+            elseif correctionY < 0 then
+                correctionYDirection = -1
+            end
             
             
             if normal:dotProduct(velocityVector) > 0 then
@@ -612,17 +688,31 @@ function playdate.update()
             end
             
             movedPlayerX = nearestPoint.x + (normal.x * BLOCK_HEIGHT * 0.5)
-            movedPlayerY = nearestPoint.y + (normal.y * BLOCK_HEIGHT * 0.5)
+             
             
-            
-            inputVelocity:projectAlong(overlappingBlock.line:segmentVector()) 
-            inputVelocity *= PLAYER_REDIRECT_VELOCITY_RATIO 
+            if isntPlatform then
+                -- movedPlayerY = nearestPoint.y + (normal.y * BLOCK_HEIGHT * 0.5)
+                --movedPlayerY += (correctionYDirection * PLAYER_WIDTH * 0.5)
+                movedPlayerY = nearestPoint.y + (correctionYDirection * (HALF_WIDTH + 2))
+                
+                inputVelocity.y = 0
+            end
             
             if not isntPlatform then
+                inputVelocity:projectAlong(overlappingBlock.line:segmentVector()) 
+                print("is platform, projecting along block")
+                inputVelocity *= PLAYER_REDIRECT_VELOCITY_RATIO 
                 grounded = true
             end
         end   
     end
+    
+    --case where running along ground
+    --     ->\
+    
+    --'floating' too high when jumping off slope
+    
+    --intersecting with walls
     
     
     playerX = movedPlayerX
