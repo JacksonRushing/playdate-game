@@ -5,9 +5,20 @@ local gfx <const> = playdate.graphics
 
 local initializedGame = false
 
-local cameraScroll = 0
+local playing = false
+
+local backgroundImageA, backgroundImageB
+
+local lavaHeight = INITIAL_LAVA_HEIGHT
+local lavaBottom = INITIAL_LAVA_HEIGHT
+local lavaSynth = playdate.sound.synth.new(playdate.sound.kWaveNoise)
+
+local cameraScroll = -INITIAL_SCROLL
+local scrollTransform = pd.geometry.affineTransform.new()
+scrollTransform:translate(cameraScroll,0)
 
 -- Defining player variables
+local score = 0
 local playerX, playerY = 0, PLAYER_SPAWN_Y
 
 local raycastLine
@@ -36,16 +47,41 @@ local rightButton = pd.kButtonDown
 local leftButton = pd.kButtonUp
 local jumpButton = pd.kButtonRight
 
+local CrankScrolls = false
+
+local platformThump = pd.sound.sampleplayer.new("./assets/click.wav")
+local deathSound = pd.sound.sampleplayer.new("./assets/death.wav")
+
+
+local focusX = 0
+local foxusY = 0
+
+local titleScreen = gfx.image.new("./assets/title.png")
+local gameOverImage = gfx.image.new("./assets/gameover.png")
+local scoreImage = gfx.image.new(170, 100)
+
+local State = "title"
+
+
 local menu = playdate.getSystemMenu()
 menu:addCheckmarkMenuItem("Loop Player", loopPlayer, function(value)
     loopPlayer = value
 end)
 
-if pd.isSimulator then
-    rightButton = pd.kButtonRight
-    leftButton = pd.kButtonLeft
-    jumpButton = pd.kButtonUp
-    
+menu:addCheckmarkMenuItem("Crank Scrolls", CrankScrolls, function(value)
+    CrankScrolls = value
+end)
+
+-- if pd.isSimulator then
+--     rightButton = pd.kButtonRight
+--     leftButton = pd.kButtonLeft
+--     jumpButton = pd.kButtonUp
+--     
+-- end
+
+local testGameData = pd.datastore.read()
+if testGameData ~= nil then
+    print(testGameData.highScore)
 end
 
 SpikeBlock =
@@ -53,14 +89,39 @@ SpikeBlock =
     
 } 
 
-function playdate.debugDraw()
-    if closestPoint ~= nil then
-    gfx.drawCircleAtPoint(closestPoint.x, closestPoint.y, 2)
-    end
-end
+-- function playdate.debugDraw()
+--     if closestPoint ~= nil then
+--     gfx.drawCircleAtPoint(closestPoint.x, closestPoint.y, 2)
+--     end
+-- end
 function clamp(value, min, max)
     return math.max(math.min(value, max), min)
 end
+
+-- Automatically save game data when the player chooses
+-- to exit the game via the System Menu or Menu button
+function playdate.gameWillTerminate()
+    saveGameData()
+end
+
+-- Automatically save game data when the device goes
+-- to low-power sleep mode because of a low battery
+function playdate.gameWillSleep()
+    saveGameData()
+end
+
+
+function saveGameData()
+    local currentGameData = playdate.datastore.read()
+
+    if currentGameData == nil or currentGameData.highScore < score then
+        local gameData = {
+            highScore = score
+        }
+        playdate.datastore.write(gameData)
+    end
+end
+
 
 function SpikeBlock:new(o)
     o = o or {}
@@ -82,11 +143,13 @@ function SpikeBlock:new(o)
     self.rotation = 0
     self.falling = true
     self.normal = nil
+    
+    
     return self
 end
 
 function initPlatforms()
-    clearPlatforms()
+    resetPlatforms()
     
     local b = nextBlock(false)
     b.rotation = 45
@@ -110,29 +173,7 @@ function initPlatforms()
   
 end
 -- 
--- function checkGroundCollisions()
---     for i,v in ipairs(spikeBlocks) do
---         if v ~= nil then
---             x1, y1, x2, y2 = v.line:unpack()
---             min = math.min(x1, x2)
---             if min <= 0 then
---                 xDelta = -min
---                 x1 += xDelta
---                 x2 += xDelta
---                 
---                 v.posX += xDelta
---                 v.line = playdate.geometry.lineSegment.new(x1, y1, x2, y2)
---                 
---                 
---                 v.falling = false
---                 if v == activeBlock then
---                     activeBlock = nil
---                 end
---             end
---         end
---     end
---     
--- end
+
 
 function checkCollisions()
     for j, blockA in ipairs(spikeBlocks) do
@@ -141,8 +182,10 @@ function checkCollisions()
                 if blockB ~= nil and blockB ~= blockA then
                     if blockB.line:intersectsLineSegment(blockA.line) then
                         blockA.falling = false
+                        platformThump:play()
                         if activeBlock == blockA then 
                             activeBlock = nil
+                            nextBlock(true)
                         end
                     end
                 end
@@ -155,7 +198,7 @@ end
 function SpikeBlock:fall(deltaTime)
     if self.falling then
         self.posX -= BLOCK_FALL_VELOCITY * deltaTime
-        print(self.rotation)
+        --print(self.rotation)
     end
 end
 
@@ -203,6 +246,8 @@ function SpikeBlock:setTransform()
     
 end
 
+
+
 function SpikeBlock:draw()
     
     if self.polygon == 0 then
@@ -225,15 +270,23 @@ function SpikeBlock:draw()
     end
     
     transformedPolygon = self.transform:transformedPolygon(self.polygon)
+    
+    --transform by scroll
+    
+    transformedPolygon = scrollTransform:transformedPolygon(transformedPolygon)
+    
+    
+    
     if DRAW_BOX then
         if self == activeBlock then
-            gfx.fillPolygon(transformedPolygon)
-        else
             gfx.drawPolygon(transformedPolygon)
+        else
+            gfx.fillPolygon(transformedPolygon)
         end
     end
     if DRAW_LINE then
-        gfx.drawLine(self.line)
+        
+        gfx.drawLine(scrollTransform:transformedLineSegment(self.line))
     end
     
 end
@@ -242,8 +295,8 @@ function generateBlock()
     newBlock = SpikeBlock:new()
     newBlock.width = math.random(BLOCK_MIN_WIDTH, BLOCK_MAX_WIDTH)
     newBlock.height = BLOCK_HEIGHT
-    newBlock.rotation = 0
-    newBlock.posX = BLOCK_SPAWN_Y + (BLOCK_HEIGHT / 2)
+    newBlock.rotation = 90
+    newBlock.posX = BLOCK_SPAWN_Y + (BLOCK_HEIGHT / 2) - cameraScroll + (newBlock.width * 0.5)
     halfWidth = math.ceil(newBlock.width / 2)
     newBlock.posY = math.random(halfWidth, 240 - halfWidth)
     
@@ -254,6 +307,7 @@ function nextBlock(setActive)
     newBlock = generateBlock()
     if setActive then
         activeBlock = newBlock
+        newBlock.rotation = pd.getCrankPosition()
     end
     newBlock:setTransform()
     table.insert(spikeBlocks, newBlock)
@@ -261,6 +315,10 @@ function nextBlock(setActive)
 end
 
 function drawPlayerSprite(posX, posY, running, focusX, focusY)
+    
+    local playerPoint = pd.geometry.point.new(posX, posY)
+    playerPoint = scrollTransform:transformedPoint(playerPoint)
+    
     local flipArg = gfx.kImageUnflipped
     local currentSprite = nil
     
@@ -275,14 +333,14 @@ function drawPlayerSprite(posX, posY, running, focusX, focusY)
         currentSprite = playerSprite
     end
     
-    currentSprite:drawAnchored(posX, posY, 0.0, 0.5, flipArg)
+    currentSprite:drawAnchored(playerPoint.x, playerPoint.y, 0.0, 0.5, flipArg)
     
     local pupilOffsetX = 0
     local pupilOffsetY = 0
     
     if focusX ~= -1 or focusY ~= -1  then
-        local deltaX = focusX - (posY)
-        local deltaY = focusY - posY
+        local deltaX = focusX - (playerPoint.x)
+        local deltaY = focusY - (playerPoint.y + 22) --offset by pupil height
         local delta = pd.geometry.vector2D.new(deltaX, deltaY)
         delta:normalize()
         --print(deltaX, deltaY, delta.x, delta.y)
@@ -292,7 +350,7 @@ function drawPlayerSprite(posX, posY, running, focusX, focusY)
     
     --draw pupil
     --gfx.setColor(gfx.kColorBlack)
-    playerPupil:drawAnchored(posX + pupilOffsetX, posY + pupilOffsetY, 0.0, 0.5)
+    playerPupil:drawAnchored(playerPoint.x + pupilOffsetX, playerPoint.y + pupilOffsetY, 0.0, 0.5)
 end
 
 -- function grounded()
@@ -302,6 +360,31 @@ end
 --     end
 --     return false
 -- end
+
+function gameover()
+    saveGameData()
+    local highScore = 0
+    local scoreData = pd.datastore.read()
+    if scoreData ~= nil then
+        highScore = scoreData.highScore
+    end
+    playing = false
+    deathSound:play()
+
+    gfx.pushContext(scoreImage)
+    gfx.drawText("score:", 2, 0)
+    gfx.drawText(score, 2, 25)
+    gfx.drawText("high score:", 2, 50)
+    gfx.drawText(highScore, 2, 75)
+    gfx.popContext()
+
+    scoreImage = scoreImage:rotatedImage(90)
+
+    
+    lavaSynth:setVolume(0)
+
+    --explodey animation
+end
 
 function jump()
     
@@ -318,18 +401,33 @@ end
 
 
 
-function init()
-    -- remove all platforms
-    clearPlatforms()
-    
-    -- add ground platform
+function initGameplay()
+    -- remove all platforms, add ground
+    score = 0
+    scoreImage = gfx.image.new(170, 100)
+    playdate.resetElapsedTime()
+    playerX, playerY = 0, PLAYER_SPAWN_Y
 
+    cameraScroll = -INITIAL_SCROLL
+    scrollTransform = pd.geometry.affineTransform.new()
+    scrollTransform:translate(cameraScroll,0)
+    resetPlatforms()
+    lavaSynth:playNote("C1")
+    lavaSynth:setVolume(0)
+    
+    playing = true
+    lavaHeight = INITIAL_LAVA_HEIGHT
+    nextBlock(true)
 end
 
 function clearPlatforms()
     for k in pairs(spikeBlocks) do
         spikeBlocks[k] = nil
     end
+end
+
+function resetPlatforms()
+    clearPlatforms()
     
     local groundBlock = nextBlock(false)
     groundBlock.falling = false
@@ -352,6 +450,14 @@ function drawGroundDebugHud(rightDirection, normal)
     
     gfx.drawLine(slopeMidpoint.x, slopeMidpoint.y, slopeMidpoint.x + (normal.x * 10), slopeMidpoint.y + (normal.y * 10))
   
+end
+
+function drawLava()
+    local color = gfx.getColor()
+    gfx.setDitherPattern(LAVA_ALPHA, gfx.image.kDitherTypeBayer8x8)
+    gfx.fillRect(0, 0, lavaHeight + cameraScroll, 240)
+    
+    gfx.setColor(color)
 end
 
 function getOverlappingWall(lineSegment, blocks)
@@ -417,26 +523,32 @@ function getNearestPointOnGround(playerPos, block)
     return groundLine:closestPointOnLineToPoint(playerPos)
 end
 
-function playdate.debugDraw()
-    -- for i,v in ipairs(spikeBlocks) do
-    --     if v ~= nil then
-    --         local midpoint = v.line:midPoint()
-    --         local normal = v:getNormal()
-    --         
-    --         local endPoint = pd.geometry.point.new(midpoint.x + (normal.x * 20), midpoint.y + (normal.y * 20))
-    --         
-    --         gfx.drawLine(midpoint.x, midpoint.y, endPoint.x, endPoint.y)
-    --         gfx.drawCircleAtPoint(endPoint.x, endPoint.y, 2)
-    --     end
-    -- end
+-- function playdate.debugDraw()
+--     -- for i,v in ipairs(spikeBlocks) do
+--     --     if v ~= nil then
+--     --         local midpoint = v.line:midPoint()
+--     --         local normal = v:getNormal()
+            
+--     --         local endPoint = pd.geometry.point.new(midpoint.x + (normal.x * 20), midpoint.y + (normal.y * 20))
+            
+--     --         gfx.drawLine(midpoint.x, midpoint.y, endPoint.x, endPoint.y)
+--     --         gfx.drawCircleAtPoint(endPoint.x, endPoint.y, 2)
+--     --     end
+--     -- end
+
+--     if focusX ~= -1 and focusY ~= -1 then
+--         gfx.fillCircleAtPoint(focusX, focusY, 4)
+--     end
     
-    gfx.drawLine(raycastLine)
-    gfx.drawLine(velocityLine)
-    local normalizedVelocity = inputVelocity:normalized()
-    gfx.drawLine(25,25, 25 + (normalizedVelocity.x * 15), 25 + (normalizedVelocity.y * 15))
-    local playerRect = getPlayerRect()
-    gfx.drawRect(playerRect:unpack())
-end
+    
+--     gfx.drawLine(scrollTransform:transformedLineSegment(raycastLine))
+--     gfx.drawLine(scrollTransform:transformedLineSegment(velocityLine))
+--     local normalizedVelocity = inputVelocity:normalized()
+--     gfx.drawLine(25,25, 25 + (normalizedVelocity.x * 15), 25 + (normalizedVelocity.y * 15))
+--     local playerRect = getPlayerRect()
+--     playerRect.x += cameraScroll
+--     gfx.drawRect(playerRect:unpack())
+-- end
 
 function getPlayerRect()
     
@@ -454,11 +566,27 @@ function isPlatform(block)
         return true
     end
 end
-
--- playdate.update function is required in every project!
 function playdate.update()
+    if State == "gameplay" then
+        gameplayUpdate()
+    elseif State == "title" then
+        titleUpdate()
+    end
+end
+
+function titleUpdate()
+    gfx.clear()
+    if (pd.buttonJustPressed(pd.kButtonA)) then
+        State = "gameplay"
+        initializedGame = false
+    end
+
+    titleScreen:draw(0, 0)
+end
+
+function gameplayUpdate()
     if not initializedGame then
-        init()
+        initGameplay()
         initializedGame = true
     end
     
@@ -471,55 +599,87 @@ function playdate.update()
     local deltaTime = playdate.getElapsedTime()
     playdate.resetElapsedTime()
     
+    local deltaCrank = playdate.getCrankChange()
+    
+    if playing then
+        lavaHeight += LAVA_SPEED * deltaTime
+    end
+    
     local inputX = 0
     local inputY = 0
     local rightDirection = pd.geometry.vector2D.new(0, 1)
     local drawClone = false
     
     
-    
-    --update blocks
-    
-    if activeBlock ~= nil then
-        activeBlock.rotation = playdate.getCrankPosition()
-    end
-    
-    for i,v in ipairs(spikeBlocks) do
-        if v ~= nil then
-            v:fall(deltaTime)
-            v:setTransform()
+    if playing then
+        --update blocks
+        
+        local deltaScroll = 0
+        
+        if CrankScrolls then
+            
+            deltaScroll = deltaCrank * CRANK_SCROLL_SPEED
+            cameraScroll += deltaScroll
+        else
+            if activeBlock ~= nil then
+                activeBlock.rotation = playdate.getCrankPosition()
+            end
         end
+        
+        if deltaScroll ~= 0 then
+            scrollTransform:translate(deltaScroll, 0)
+        end
+        
+        
+        
+        for i,v in ipairs(spikeBlocks) do
+            if v ~= nil then
+                v:fall(deltaTime)
+                v:setTransform()
+            end
+        end
+        
+        --check collisions between blocks
+        checkCollisions()
     end
     
-    --check collisions between blocks
-    checkCollisions()
     
     
+    -- if (pd.buttonJustPressed(pd.kButtonB)) then
+    --     nextBlock(true)
+    -- end
     
-    if (pd.buttonJustPressed(pd.kButtonB)) then
-        nextBlock(true)
-    end
-    
-    if (pd.buttonJustPressed(pd.kButtonA)) then
-        initPlatforms()
-    end
-    
-    if (pd.buttonIsPressed(leftButton)) then
+    -- if (pd.buttonJustPressed(pd.kButtonA)) then
+    --     initPlatforms()
+    -- end
+    if playing then
+        if (pd.buttonIsPressed(leftButton)) then
         inputY -= 1
-    end
-    
-    if (pd.buttonIsPressed(rightButton)) then
-        inputY += 1
-    end
-    
-    if (pd.buttonJustPressed(jumpButton)) then
-        --jump
-        if grounded then
-            jump()
         end
-        grounded = false
-        onSlope = false
+        
+        if (pd.buttonIsPressed(rightButton)) then
+            inputY += 1
+        end
+        
+        if (pd.buttonJustPressed(jumpButton)) then
+            --jump
+            if grounded then
+                jump()
+            end
+            grounded = false
+            onSlope = false
+        end
+    else
+        if (pd.buttonJustPressed(pd.kButtonA)) then
+            State = "gameplay"
+            initGameplay()
+        end
+
+        if (pd.buttonJustPressed(pd.kButtonB)) then
+            State = "title"
+        end
     end
+    
     
     --Calculate velocity
     --p1 is player position offset upwards
@@ -597,8 +757,8 @@ function playdate.update()
         
     end
     
-    gfx.drawLine(180, 180, 180 + (rightDirection.x * 10), 180 + (rightDirection.y * 10))
-    gfx.drawCircleAtPoint(180 + (rightDirection.x * 10), 180 + (rightDirection.y * 10), 2)
+    -- gfx.drawLine(180, 180, 180 + (rightDirection.x * 10), 180 + (rightDirection.y * 10))
+    -- gfx.drawCircleAtPoint(180 + (rightDirection.x * 10), 180 + (rightDirection.y * 10), 2)
     
     --clamp velocity
     inputVelocity.y = clamp(inputVelocity.y, -PLAYER_MAX_VELOCITY, PLAYER_MAX_VELOCITY)
@@ -608,19 +768,13 @@ function playdate.update()
     end
     
     
-    
-    
-    
-    
-    
-    
-    
     --Move player based on velocity
     local deltaX = deltaTime * (inputVelocity.x + gravityVelocity)
     local deltaY = deltaTime * (inputVelocity.y)
     
     local movedPlayerX = playerX + deltaX
     local movedPlayerY = playerY + deltaY
+
     
     
     
@@ -655,7 +809,7 @@ function playdate.update()
     
     
     
-    if overlappingBlock  ~= nil then
+    if overlappingBlock  ~= nil and playing then
         local normal = overlappingBlock:getNormal()
         local velocityVector = velocityLine:segmentVector()
         local correctDirection = normal:dotProduct(velocityVector) < 0 
@@ -707,16 +861,15 @@ function playdate.update()
         end   
     end
     
-    --case where running along ground
-    --     ->\
-    
-    --'floating' too high when jumping off slope
-    
-    --intersecting with walls
-    
-    
-    playerX = movedPlayerX
-    playerY = movedPlayerY
+    if playing then
+        playerX = movedPlayerX
+        playerY = movedPlayerY
+
+        if grounded and playerX > score then
+            score = math.floor(playerX)
+        end
+    end
+
     
     
     
@@ -730,12 +883,14 @@ function playdate.update()
         playerY = clamp(playerY, HALF_WIDTH, 240 - HALF_WIDTH)
     end
     
-    local focusX = -1
-    local focusY = -1
+    focusX = -1
+    focusY = -1
     
     if activeBlock ~= nil then
-        focusX = activeBlock.posX
-        focusY = activeBlock.posY
+        local midPoint = activeBlock.line:midPoint()
+        midPoint = scrollTransform:transformedPoint(midPoint)
+        focusX = midPoint.x
+        focusY = midPoint.y
     end
     
     local cloneY = 0
@@ -747,6 +902,28 @@ function playdate.update()
     elseif playerY > 240 then
         playerY = 0
     end
+    
+    local scrollTarget = - playerX + SCROLL_DISTANCE
+
+    if playing then
+        if scrollTarget < cameraScroll then
+            local scrollDelta = scrollTarget - cameraScroll
+            
+            local scrollAmountThisFrame = deltaTime * SCROLL_SPEED
+            
+            scrollAmountThisFrame = math.max(scrollAmountThisFrame, scrollDelta)
+            
+            scrollTransform:translate(-scrollAmountThisFrame, 0)
+            
+            cameraScroll -= scrollAmountThisFrame
+            
+            
+        end
+    end
+    
+    
+    
+    
     
     local running = inputY ~= 0
     
@@ -769,19 +946,33 @@ function playdate.update()
             v:draw()
         end
     end
+    drawLava()
     
-    
-    
-    
-    if grounded then
-        gfx.fillCircleAtPoint(380, 220, 5)
-    else
-        gfx.drawCircleAtPoint(380, 220, 5)
+    if playing then
+        lavaSynth:setVolume((lavaHeight + cameraScroll) / 400)
+        if lavaHeight > playerX + PLAYER_LAVA_THRESHOLD then
+            gameover()
+        end
     end
+
+    if not playing then
+        gameOverImage:draw(0,0)
+        scoreImage:draw(200, 40)
+    end
+
     
-    gfx.drawText(inputVelocity.x, 50, 0)
-    gfx.drawText(inputVelocity.y, 50, 25)
-    gfx.drawText(gravityVelocity, 50, 50)
+    -- if grounded then
+    --     gfx.fillCircleAtPoint(380, 220, 5)
+    -- else
+    --     gfx.drawCircleAtPoint(380, 220, 5)
+    -- end
+    --gfx.drawText(score, 50, 0)
+    
+    --gfx.drawText(inputVelocity.x, 50, 0)
+    --gfx.drawText(inputVelocity.y, 50, 25)
+    --gfx.drawText(gravityVelocity, 50, 50)
+    
+    --gfx.drawText(cameraScroll, 100, 100)
     
     xVelLastFrame = xVelocity
     yVelLastFrame = yVelocity

@@ -1,0 +1,13 @@
+paralax background
+
+floating when jumping
+
+case where running along ground
+     ->\
+------------------
+
+glitch when jumping under angled wall (?)
+
+player explosion effect / animation
+
+die if fall off screen
