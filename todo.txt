@@ -10,4 +10,5 @@ glitch when jumping under angled wall (?)
 
 player explosion effect / animation
 
-die if fall off screen
+display high score
+high score indicator

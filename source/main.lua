@@ -62,6 +62,10 @@ local scoreImage = gfx.image.new(170, 100)
 
 local State = "title"
 
+local currentLevel = 0
+local currentFallSpeed = BLOCK_FALL_VELOCITY
+local currentLavaSpeed = LAVA_SPEED
+
 
 local menu = playdate.getSystemMenu()
 menu:addCheckmarkMenuItem("Loop Player", loopPlayer, function(value)
@@ -197,7 +201,7 @@ end
 
 function SpikeBlock:fall(deltaTime)
     if self.falling then
-        self.posX -= BLOCK_FALL_VELOCITY * deltaTime
+        self.posX -= currentFallSpeed * deltaTime
         --print(self.rotation)
     end
 end
@@ -404,6 +408,9 @@ end
 function initGameplay()
     -- remove all platforms, add ground
     score = 0
+    currentLevel = 0
+    currentFallSpeed = BLOCK_FALL_VELOCITY
+    currentLavaSpeed = LAVA_SPEED
     scoreImage = gfx.image.new(170, 100)
     playdate.resetElapsedTime()
     playerX, playerY = 0, PLAYER_SPAWN_Y
@@ -602,7 +609,7 @@ function gameplayUpdate()
     local deltaCrank = playdate.getCrankChange()
     
     if playing then
-        lavaHeight += LAVA_SPEED * deltaTime
+        lavaHeight += currentLavaSpeed * deltaTime
     end
     
     local inputX = 0
@@ -776,6 +783,8 @@ function gameplayUpdate()
     local movedPlayerY = playerY + deltaY
 
     
+
+    
     
     
     --check for tunneling
@@ -806,8 +815,6 @@ function gameplayUpdate()
     
     
     local overlappingBlock, overlappingPoint = getOverlappingBlock(velocityLine, spikeBlocks)
-    
-    
     
     if overlappingBlock  ~= nil and playing then
         local normal = overlappingBlock:getNormal()
@@ -865,14 +872,18 @@ function gameplayUpdate()
         playerX = movedPlayerX
         playerY = movedPlayerY
 
+        local potentialLevel = math.floor(playerX / LEVEL_HEIGHT)
+        if potentialLevel > currentLevel then
+            currentLevel = potentialLevel
+            print(currentLevel)
+            currentLavaSpeed = LAVA_SPEED + (LAVA_SPEED_STEP * currentLevel)
+            currentFallSpeed = BLOCK_FALL_VELOCITY + (BLOCK_FALL_VELOCITY_STEP * currentLevel)
+        end
+
         if grounded and playerX > score then
             score = math.floor(playerX)
         end
     end
-
-    
-    
-    
     
     --clamp player position
     if playerX <= 0 then
@@ -920,10 +931,6 @@ function gameplayUpdate()
             
         end
     end
-    
-    
-    
-    
     
     local running = inputY ~= 0
     
